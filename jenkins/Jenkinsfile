@@ -1,36 +1,64 @@
 pipeline {
-    agent {
-        label '!windows'
-    }
-    options {
-        skipStagesAfterUnstable()
-    }
+    agent any
+
     stages {
-         stage('Build') {
+        stage('Determine Version') {
             steps {
-                // Dynamically overwrite the pom.xml version with the Jenkins build number
-                sh "mvn versions:set -DnewVersion=1.0.${env.BUILD_NUMBER} -DgenerateBackupPoms=false"
+                script {
+                    // 1. Read the latest Git commit message from the repository
+                    def commitMessage = sh(script: 'git log -1 --pretty=%B', returnStdout: true).toLowerCase()
+                    
+                    // 2. Parse the commit message for Semantic Versioning prefixes
+                    if (commitMessage.contains('feat:')) {
+                        echo "Feature commit detected! Bumping MINOR version."
+                        // In a dynamic setup, this bumps the middle number (e.g., 1.1.X)
+                        env.SEMANTIC_VERSION = "1.1.${env.BUILD_NUMBER}"
+                        
+                    } else if (commitMessage.contains('fix:')) {
+                        echo "Fix commit detected! Bumping PATCH version."
+                        // Keeps the minor version the same, bumps the last number (e.g., 1.0.X)
+                        env.SEMANTIC_VERSION = "1.0.${env.BUILD_NUMBER}"
+                        
+                    } else {
+                        echo "No semantic prefix found. Defaulting to standard patch."
+                        env.SEMANTIC_VERSION = "1.0.${env.BUILD_NUMBER}"
+                    }
+                    
+                    echo "Calculated Release Version: ${env.SEMANTIC_VERSION}"
+                }
+            }
+        }
+
+        stage('Build') {
+            steps {
+                // 3. Inject the calculated SEMANTIC_VERSION into the Maven blueprint
+                sh "mvn versions:set -DnewVersion=${env.SEMANTIC_VERSION} -DgenerateBackupPoms=false"
                 sh 'mvn -B -DskipTests clean package'
             }
         }
+
         stage('Test') {
             steps {
                 sh 'mvn test'
             }
             post {
                 always {
+                    // Collects pass/fail test results regardless of build success
                     junit 'target/surefire-reports/*.xml'
                 }
             }
         }
+
         stage('Archive Artifact') {
             steps {
+                // Safely stores the securely versioned, tested artifact
                 archiveArtifacts artifacts: 'target/*.jar', allowEmptyArchive: false
             }
         }
-        stage('Deliver') { 
+
+        stage('Deliver') {
             steps {
-                sh './jenkins/scripts/deliver.sh' 
+                sh './jenkins/scripts/deliver.sh'
             }
         }
     }
